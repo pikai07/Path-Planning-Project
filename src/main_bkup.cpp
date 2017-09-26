@@ -83,60 +83,6 @@ int NextWaypoint(double x, double y, double theta, vector<double> maps_x, vector
 
 }
 
-// get the lane based on frenet coordinates
-int getLaneFrenet(double d) {
-  int lane_width=4;
-  return int(floor(d/lane_width));
-}
-
-double FrenetLaneCenter(int lane) {
-  int lane_width=4;
-  return double((lane)*lane_width + lane_width/2);
-}
-
-double Normalise(double x) {
-  return 2.0f / (1.0f + exp(-x)) - 1.0f;
-}
-
-vector<int> SensorFusionLaneIds(int lane, json sensor_fusion) {
-  vector<int> ids;
-  for (int i = 0; i < sensor_fusion.size(); i++) {
-    float other_d = sensor_fusion[i][6];
-
-    // see if the vehicle is in my lane
-    int other_lane = getLaneFrenet(other_d);
-    if (other_lane < 0 || other_lane > 2)
-      continue;
-
-    if (other_lane == lane)
-      ids.push_back(i);
-  }
-  return ids;
-}
-
-double NearestApproach(vector<int> ids, json sensor_fusion, double check_dist, double car_s) {
-  double closest = 99999;
-
-  for (int id : ids) {
-    double vx = sensor_fusion[id][3];
-    double vy = sensor_fusion[id][4];
-    double check_speed = sqrt(vx * vx + vy * vy);
-    double check_start_car_s = sensor_fusion[id][5];
-
-    double check_end_car_s = check_start_car_s + check_dist * check_speed;
-
-    double dist_start = fabs(check_start_car_s-car_s);
-    if ( dist_start < closest)
-      closest = dist_start;
-
-    double dist_end = fabs(check_end_car_s-car_s);
-    if ( dist_end < closest)
-      closest = dist_end;
-  }
-  return closest;
-}
-
-
 // Transform from Cartesian x,y coordinates to Frenet s,d coordinates
 vector<double> getFrenet(double x, double y, double theta, vector<double> maps_x, vector<double> maps_y)
 {
@@ -187,31 +133,15 @@ vector<double> getFrenet(double x, double y, double theta, vector<double> maps_x
 }
 
 // Transform from Frenet s,d coordinates to Cartesian x,y
-vector<double> getXY(double s, double d, vector<double> maps_s,
-                     vector<double> maps_x, vector<double> maps_y)
+vector<double> getXY(double s, double d, tk::spline s_x, tk::spline s_y, tk::spline s_dx, tk::spline s_dy)
 {
-	  int prev_wp = -1;
-
-  while (s > maps_s[prev_wp + 1] && (prev_wp < (int) (maps_s.size() - 1))) {
-    prev_wp++;
-  }
-
-  int wp2 = (prev_wp + 1) % maps_x.size();
-
-  double heading = atan2((maps_y[wp2] - maps_y[prev_wp]),
-                         (maps_x[wp2] - maps_x[prev_wp]));
-  // the x,y,s along the segment
-  double seg_s = (s - maps_s[prev_wp]);
-
-  double seg_x = maps_x[prev_wp] + seg_s * cos(heading);
-  double seg_y = maps_y[prev_wp] + seg_s * sin(heading);
-
-  double perp_heading = heading - pi() / 2;
-
-  double x = seg_x + d * cos(perp_heading);
-  double y = seg_y + d * sin(perp_heading);
-
-  return {x,y};
+	  double path_x = s_x(s);
+    double path_y = s_y(s);
+    double dx = s_dx(s);
+    double dy = s_dy(s);
+    double x = path_x + d * dx;
+    double y = path_y + d * dy;
+    return {x,y};
 
 }
 
@@ -252,13 +182,20 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
 
+  // Splines to support conversion from s,d to x,y.
+    // Other direction is also possible but more difficult.
+    tk::spline s_x, s_y, s_dx, s_dy;
+    s_x.set_points(map_waypoints_s,map_waypoints_x);
+    s_y.set_points(map_waypoints_s,map_waypoints_y);
+    s_dx.set_points(map_waypoints_s,map_waypoints_dx);
+    s_dy.set_points(map_waypoints_s,map_waypoints_dy);
+
   // Start in lane 1 (0 is left, 1 is middle, 2 is right)
     int lane = 1;
-    double max_vel = 49.5; // mph
+    double speed_limit = 49.5; // mph
     double ref_vel = 0.0;
 
-  h.onMessage([&lane, &ref_vel, &max_vel, &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy
-              ](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  h.onMessage([&s_x, &s_y, &s_dx, &s_dy, &lane, &speed_limit, &ref_vel](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
   /*h.onMessage([&map_waypoints_x, &map_waypoints_y, &map_waypoints_s, &map_waypoints_dx, &map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {*/
@@ -311,50 +248,15 @@ int main() {
                         //car_d = end_path_d;
                     }
 
-            // calculate lane speeds
-            vector<double> lane_speeds ={0.0,0.0,0.0};
-            vector<int> lane_count={0,0,0};
-
             bool too_close = false;
 
             vector<double> ptsx;
             vector<double> ptsy;
 
-            for (int i = 0; i < sensor_fusion.size(); i++) {
-                float other_d = sensor_fusion[i][6];
-                int other_lane = getLaneFrenet(other_d);
-                if (other_lane < 0 || other_lane > 2)
-                   continue;
-                assert(other_lane >= 0 && other_lane <=2 );
-                double vx = sensor_fusion[i][3];
-                double vy = sensor_fusion[i][4];
-                double check_speed = sqrt(vx*vx+vy*vy);
-                lane_speeds[other_lane]+=check_speed*2.23694; //convert to MPH
-                lane_count[other_lane]+=1;
-              }
-
-              // lets average now
-              for (int i = 0; i < lane_speeds.size(); i++) {
-                int n = lane_count[i];
-                // if no other vehicles in the lane - set to maximum allowed
-                if (n == 0){
-                  lane_speeds[i]=max_vel;
-                }
-                // average the speed and
-                else {
-                  lane_speeds[i]=lane_speeds[i]/n;
-                }
-              }
-
-              double closest_speed = max_vel;
-
             for(int i = 0; i < sensor_fusion.size(); i++) {
-                        float other_d = sensor_fusion[i][6];
-                        // see if the vehicle is in my lane
-                        int other_lane = getLaneFrenet(other_d);
-                        int ego_lane = getLaneFrenet(end_path_d);
-//                cout << "ego d " << end_path_d << " lane "<< ego_lane << " other d " << other_d << " lane " << other_lane << endl;
-                        if (lane == other_lane ) {
+                        double d = sensor_fusion[i][6];
+                        // Other car is in my lane
+                        if(d < (2+4*lane+2) && d > (2+4*lane-2)) {
                             double vx = sensor_fusion[i][3];
                             double vy = sensor_fusion[i][4];
                             double check_speed = sqrt(vx*vx+vy*vy);
@@ -363,62 +265,22 @@ int main() {
                             // Other car is in front and less than 30 meters away
                             if(check_car_s > car_s && check_car_s - car_s < 30) {
                                 too_close = true;
-                                closest_speed = check_speed;
+                                if (lane > 0)
+                                {
+                                  lane = 0;
+                                }
                             }
                         }
                     }
 
                     if(too_close) {
-                             vector<int> possible_lanes;
-                    if (lane == 0)
-                            possible_lanes = {0,1};
-                    else if (lane == 1)
-                            possible_lanes ={0,1,2};
-                    else
-                            possible_lanes ={1,2};
-
-                int best_lane=lane;
-                double best_cost=numeric_limits<double>::max();
-                for (int check_lane: possible_lanes) {
-                  double cost = 0;
-
-                // lane cost
-                  if (check_lane != lane)
-                    cost += 1000;
-
-                  // speed cost
-                  double avg_speed =lane_speeds[check_lane];
-                  cost += Normalise(2.0 * (avg_speed-ref_vel/avg_speed)) * 1000;
-
-                  // collision and buffer cost
-                  auto ids = SensorFusionLaneIds(check_lane,sensor_fusion);
-                  double nearest = NearestApproach(ids, sensor_fusion, .02*prev_size, car_s);
-
-                  double buffer = 10;
-
-                  if (nearest < buffer)
-                    cost+=pow(10,5);
-
-                  cost += Normalise(2*buffer/nearest) * 1000;
-
-                  if (cost < best_cost) {
-                    best_lane = check_lane;
-                    best_cost = cost;
-                  }
-                }
-
-                // if we are close and going faster then the average
-                if (best_lane == lane && (ref_vel > lane_speeds[lane] || ref_vel > closest_speed))
-                  ref_vel -= .224;
-
-                // change lanes
-                lane = best_lane;
-
-              } else
-              if (ref_vel < max_vel)  // MPH
-              {
-                ref_vel += .224;
-              }
+                            ref_vel -= 0.224;
+                        } else if (ref_vel < speed_limit){
+                            ref_vel += 0.224;
+                        }
+                        else if(ref_vel > speed_limit) {
+                            ref_vel = speed_limit;
+                        }
 
                     double ref_x = car_x;
                     double ref_y = car_y;
@@ -443,10 +305,9 @@ int main() {
                         ptsy.push_back(ref_y);
                     }
 
-                    int lane_d = FrenetLaneCenter(lane);
-                    vector<double> next_wp0 = getXY(car_s+30, lane_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
-                    vector<double> next_wp1 = getXY(car_s+60, lane_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
-                    vector<double> next_wp2 = getXY(car_s+90, lane_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+                    vector<double> next_wp0 = getXY(car_s+30, (2+4*lane), s_x, s_y, s_dx, s_dy);
+                    vector<double> next_wp1 = getXY(car_s+60, (2+4*lane), s_x, s_y, s_dx, s_dy);
+                    vector<double> next_wp2 = getXY(car_s+90, (2+4*lane), s_x, s_y, s_dx, s_dy);
 
                     ptsx.push_back(next_wp0[0]);
                     ptsx.push_back(next_wp1[0]);
