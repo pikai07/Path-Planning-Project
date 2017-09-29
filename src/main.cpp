@@ -83,7 +83,8 @@ int NextWaypoint(double x, double y, double theta, vector<double> maps_x, vector
 
 }
 
-// get the lane based on frenet coordinates
+
+// lane of the last planned path point
 int getLaneFrenet(double d) {
   int lane_width=4;
   return int(floor(d/lane_width));
@@ -94,11 +95,13 @@ double FrenetLaneCenter(int lane) {
   return double((lane)*lane_width + lane_width/2);
 }
 
-double Normalise(double x) {
+// Normalize cost
+
+double Normalize(double x) {
   return 2.0f / (1.0f + exp(-x)) - 1.0f;
 }
 
-vector<int> SensorFusionLaneIds(int lane, json sensor_fusion) {
+vector<int> getSensorFusionLaneIds(int lane, json sensor_fusion) {
   vector<int> ids;
   for (int i = 0; i < sensor_fusion.size(); i++) {
     float other_d = sensor_fusion[i][6];
@@ -114,7 +117,7 @@ vector<int> SensorFusionLaneIds(int lane, json sensor_fusion) {
   return ids;
 }
 
-double NearestApproach(vector<int> ids, json sensor_fusion, double check_dist, double car_s) {
+double NearestCar(vector<int> ids, json sensor_fusion, double check_dist, double car_s) {
   double closest = 99999;
 
   for (int id : ids) {
@@ -125,11 +128,11 @@ double NearestApproach(vector<int> ids, json sensor_fusion, double check_dist, d
 
     double check_end_car_s = check_start_car_s + check_dist * check_speed;
 
-    double dist_start = fabs(check_start_car_s-car_s);
+    double dist_start = fabs(check_start_car_s-car_s); //vehicle in lane ahead
     if ( dist_start < closest)
       closest = dist_start;
 
-    double dist_end = fabs(check_end_car_s-car_s);
+    double dist_end = fabs(check_end_car_s-car_s); //vehicle in lane ahead
     if ( dist_end < closest)
       closest = dist_end;
   }
@@ -333,14 +336,14 @@ int main() {
                 lane_count[other_lane]+=1;
               }
 
-              // lets average now
+              // Get the average
               for (int i = 0; i < lane_speeds.size(); i++) {
                 int n = lane_count[i];
                 // if no other vehicles in the lane - set to maximum allowed
                 if (n == 0){
                   lane_speeds[i]=max_vel;
                 }
-                // average the speed and
+                // average the speed
                 else {
                   lane_speeds[i]=lane_speeds[i]/n;
                 }
@@ -352,8 +355,7 @@ int main() {
                         float other_d = sensor_fusion[i][6];
                         // see if the vehicle is in my lane
                         int other_lane = getLaneFrenet(other_d);
-                        int ego_lane = getLaneFrenet(end_path_d);
-//                cout << "ego d " << end_path_d << " lane "<< ego_lane << " other d " << other_d << " lane " << other_lane << endl;
+
                         if (lane == other_lane ) {
                             double vx = sensor_fusion[i][3];
                             double vy = sensor_fusion[i][4];
@@ -382,24 +384,26 @@ int main() {
                 for (int check_lane: possible_lanes) {
                   double cost = 0;
 
-                // lane cost
+                 // lane cost
                   if (check_lane != lane)
                     cost += 1000;
 
                   // speed cost
                   double avg_speed =lane_speeds[check_lane];
-                  cost += Normalise(2.0 * (avg_speed-ref_vel/avg_speed)) * 1000;
+                  cost += Normalize(2.0 * (avg_speed-ref_vel/avg_speed)) * 1000;
 
                   // collision and buffer cost
-                  auto ids = SensorFusionLaneIds(check_lane,sensor_fusion);
-                  double nearest = NearestApproach(ids, sensor_fusion, .02*prev_size, car_s);
+                  auto ids = getSensorFusionLaneIds(check_lane,sensor_fusion);
 
-                  double buffer = 10;
+                  // Get the closest car to my car
+                  double nearest = NearestCar(ids, sensor_fusion, .02*prev_size, car_s);
+
+                  double buffer = 10; // distance to the car ahead
 
                   if (nearest < buffer)
                     cost+=pow(10,5);
 
-                  cost += Normalise(2*buffer/nearest) * 1000;
+                  cost += Normalize(2*buffer/nearest) * 1000;
 
                   if (cost < best_cost) {
                     best_lane = check_lane;
@@ -415,9 +419,9 @@ int main() {
                 lane = best_lane;
 
               } else
-              if (ref_vel < max_vel)  // MPH
+              if (ref_vel < max_vel)  
               {
-                ref_vel += .224;
+                ref_vel += .224; //Convert to mph
               }
 
                     double ref_x = car_x;
@@ -443,6 +447,7 @@ int main() {
                         ptsy.push_back(ref_y);
                     }
 
+                    // Stay in the center of the lane by calling function FrenetLaneCenter
                     int lane_d = FrenetLaneCenter(lane);
                     vector<double> next_wp0 = getXY(car_s+30, lane_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
                     vector<double> next_wp1 = getXY(car_s+60, lane_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
@@ -467,7 +472,7 @@ int main() {
                     }
 
                     //cout << "Creating spline with" << endl << "   ptsx: " << ptsx << endl << "   ptsy: " << ptsy << endl;
-                    // create a soline
+                    // create a spline
                     tk::spline traj;
                     // set x,y points to the spline
                     traj.set_points(ptsx,ptsy);
