@@ -135,15 +135,15 @@ still be compilable with cmake and make./
 
 ## Approach
 
-The car in normal driving does not collide with other vehicles. Whilst in a lane, it tries to match either the speed of the vehicle in front or the average for the lane, Whichever is lowest.
+The car will try to match either the speed of the vehicle in front or the average speed for the lane, whichever is lowest.
 
 The spline technique was very helpful in ensuring max acceleration in m/s/s and Jerk in m/s/s/s are not exceeded.
 
-With the help of renet coordinates, the vehicle was able to stay consistently in the centre of each 4 meter wide lane.
+With the help of frenet coordinates, the vehicle was able to stay consistently in the centre of each 4 meter wide lane.
 
-A cost function was implemented that had a bias towards staying in the existing lane, matching the average lane speed, avoiding collisions and having a buffer for other vehicles in the proposed lanes. If the best lane found, was still the existing lane with a closely vehicle, then speed was adjusted to match.
+A cost function was implemented with weights adjusted such that it had a bias towards staying in the existing lane, matching the average lane speed, avoiding collisions and having a buffer for other vehicles in the proposed lanes. If the best lane found was still the existing lane with a vehicle closeby, then the speed was adjusted to match.
 
 ## Learnings 
-The approach I used to submit the project for review was based on the walkthrough video. I added some lane speed & nearest approach calculations to provide input for a basic cost function as described above.
+The approach I used was based on the walkthrough video. I added lane speed & nearest approach calculations to provide input for a basic cost function as described above.
 
-Spline approach in particular was very useful in generating a smooth trajectory. 
+I found spline approach in particular to be very useful in generating a smooth trajectory. 
